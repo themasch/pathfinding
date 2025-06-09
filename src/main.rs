@@ -2,9 +2,10 @@ use bevy::{
     color::palettes::css::WHITE,
     pbr::wireframe::{WireframeConfig, WireframePlugin},
     prelude::*,
+    render::mesh::VertexAttributeValues,
 };
 use bevy_obj::ObjPlugin;
-use std::f32::consts::PI;
+use std::{collections::HashMap, f32::consts::PI, time::Instant};
 
 fn main() {
     App::new()
@@ -14,6 +15,7 @@ fn main() {
             default_color: WHITE.into(),
         })
         .add_systems(Startup, setup)
+        .add_systems(Update, generate_new_nav_graph)
         .run();
 }
 
@@ -31,6 +33,7 @@ fn setup(
 
     commands.spawn((
         Mesh3d(navmesh),
+        NavRoot,
         MeshMaterial3d(navmesh_material_handle.clone()),
         Transform::IDENTITY.with_scale(Vec3::new(4.0, 4.0, 4.0)),
     ));
@@ -53,4 +56,99 @@ fn setup(
         Camera3d::default(),
         Transform::from_xyz(2.0, 10.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+}
+
+#[derive(Component)]
+struct NavRoot;
+
+#[derive(Component, Debug)]
+struct NavGraph {
+    nodes: Vec<NavNode>,
+    triangles: Vec<(NodeIndex, NodeIndex, NodeIndex)>,
+}
+
+type NodeIndex = usize;
+type TravelCost = f32;
+
+#[derive(Debug)]
+struct NavNode {
+    connections: Vec<(NodeIndex, TravelCost)>,
+    triangles: Vec<NodeIndex>,
+}
+
+impl NavNode {
+    fn new() -> Self {
+        NavNode {
+            connections: Vec::new(),
+            triangles: Vec::new(),
+        }
+    }
+}
+
+fn generate_new_nav_graph(
+    qry: Query<(&Mesh3d, Entity), (With<NavRoot>, Without<NavGraph>)>,
+    meshes: Res<Assets<Mesh>>,
+    mut cmds: Commands,
+) {
+    for (mesh, entity) in qry {
+        println!("building new nav graph for {:?} {:?}", mesh.id(), entity);
+        let start = Instant::now();
+        let cmesh: &Mesh = meshes.get(mesh.id()).unwrap();
+        let tris = cmesh.triangles().unwrap();
+        let mut node_map = HashMap::<(u32, u32, u32), NodeIndex>::new();
+        let mut nodes = Vec::new();
+        let mut triangles = Vec::new();
+        println!("vetex count: {}", cmesh.count_vertices());
+        println!("tri count: {}", cmesh.triangles().unwrap().count());
+        for t in tris {
+            let v0 = t.vertices[0];
+            let v1 = t.vertices[1];
+            let v2 = t.vertices[2];
+
+            let v0_idx = register_node(v0, &mut node_map, &mut nodes);
+            let v1_idx = register_node(v1, &mut node_map, &mut nodes);
+            let v2_idx = register_node(v2, &mut node_map, &mut nodes);
+
+            let t_idx = triangles.len();
+            triangles.push((v0_idx, v1_idx, v2_idx));
+
+            let dv0v1 = v0.distance_squared(v1);
+            let dv0v2 = v0.distance_squared(v2);
+            let dv1v2 = v1.distance_squared(v2);
+
+            nodes[v0_idx].triangles.push(t_idx);
+            nodes[v1_idx].triangles.push(t_idx);
+            nodes[v2_idx].triangles.push(t_idx);
+            // 3x 8b
+
+            nodes[v0_idx].connections.push((v1_idx, dv0v1));
+            nodes[v0_idx].connections.push((v2_idx, dv0v2));
+            nodes[v1_idx].connections.push((v0_idx, dv0v1));
+            nodes[v1_idx].connections.push((v2_idx, dv1v2));
+            nodes[v2_idx].connections.push((v0_idx, dv0v2));
+            nodes[v2_idx].connections.push((v1_idx, dv1v2));
+            // 6x 16b
+        }
+        println!("nodes: {:?}", nodes);
+        let graph = NavGraph { nodes, triangles };
+
+        println!("size: {:?}", size_of_val(&graph));
+        cmds.entity(entity).insert(graph);
+
+        println!("took: {:?}", start.elapsed());
+    }
+}
+
+fn register_node(
+    v: Vec3,
+    node_map: &mut HashMap<(u32, u32, u32), NodeIndex>,
+    nodes: &mut Vec<NavNode>,
+) -> NodeIndex {
+    *node_map
+        .entry((v.x.to_bits(), v.y.to_bits(), v.z.to_bits()))
+        .or_insert_with(|| {
+            let len = nodes.len();
+            nodes.push(NavNode::new());
+            len
+        })
 }
