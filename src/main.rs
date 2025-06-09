@@ -416,36 +416,44 @@ fn astar(graph: &NavGraph, from: Vec3, to: Vec3) -> Option<Path> {
 
     let mut pfnodes = HashMap::new();
     let mut open_set = BinaryHeap::new();
+    let mut came_from = HashMap::new();
     for (node_index, cost) in start_node.connections {
         let node = &graph.nodes[node_index];
         let g = cost;
         let f = g + node.pos.distance(end_node.pos);
-        let node = Rc::new(RefCell::new(AStarNode { g, f, node_index }));
-        pfnodes.insert(node_index, node.clone());
+        let node = Rc::new(RefCell::new(AStarNode {
+            g,
+            f,
+            node: NodeKey::GraphNode(node_index),
+        }));
+        pfnodes.insert(NodeKey::GraphNode(node_index), node.clone());
         open_set.push(node.clone());
+        came_from.insert(NodeKey::GraphNode(node_index), NodeKey::Start);
     }
-
-    let mut came_from = HashMap::new();
 
     while !open_set.is_empty() {
         let current_rc = open_set.pop().unwrap();
         let current = current_rc.borrow();
-        if goal_nodes.contains(&current.node_index) {
-            //TODO: I think this is not exactly correct, we still need to pick the best of these three, right?
-            let p = reconstruct_path(&came_from, current.node_index);
+
+        if current.node == NodeKey::End {
+            let p = reconstruct_path(&came_from, current.node);
             return Some(build_waypoints(p, graph, from, to));
         }
 
-        let node = &graph.nodes[current.node_index];
+        let NodeKey::GraphNode(current_index) = current.node else {
+            panic!("expected a graph node, got: {:?}", current.node);
+        };
+
+        let node = &graph.nodes[current_index];
 
         for (n, cost) in &node.connections {
-            let neighbor_index = *n;
-            let neighbor_g = &graph.nodes[neighbor_index];
+            let neighbor_index = NodeKey::GraphNode(*n);
+            let neighbor_g = &graph.nodes[*n];
             let neighbor_a_rc = pfnodes.entry(neighbor_index).or_insert_with(|| {
                 Rc::new(RefCell::new(AStarNode {
                     g: INFINITY,
                     f: INFINITY,
-                    node_index: neighbor_index,
+                    node: neighbor_index,
                 }))
             });
             let mut neighbor_a = neighbor_a_rc.borrow_mut();
@@ -455,7 +463,29 @@ fn astar(graph: &NavGraph, from: Vec3, to: Vec3) -> Option<Path> {
             if tg < neighbor_a.g {
                 neighbor_a.g = tg;
                 neighbor_a.f = tg + neighbor_g.pos.distance(end_node.pos);
-                came_from.insert(neighbor_index, current.node_index);
+                came_from.insert(neighbor_index, current.node);
+                drop(neighbor_a);
+                open_set.push(neighbor_a_rc.clone());
+            }
+        }
+
+        if goal_nodes.contains(&current_index) {
+            let neighbor_g = &end_node;
+            let neighbor_a_rc = pfnodes.entry(NodeKey::End).or_insert_with(|| {
+                Rc::new(RefCell::new(AStarNode {
+                    g: INFINITY,
+                    f: INFINITY,
+                    node: NodeKey::End,
+                }))
+            });
+            let mut neighbor_a = neighbor_a_rc.borrow_mut();
+
+            let tg = current.g + neighbor_g.cost_to(&current_index).unwrap_or(f32::INFINITY);
+
+            if tg < neighbor_a.g {
+                neighbor_a.g = tg;
+                neighbor_a.f = tg + neighbor_g.pos.distance(end_node.pos);
+                came_from.insert(NodeKey::End, current.node);
                 drop(neighbor_a);
                 open_set.push(neighbor_a_rc.clone());
             }
@@ -465,21 +495,21 @@ fn astar(graph: &NavGraph, from: Vec3, to: Vec3) -> Option<Path> {
     None
 }
 
-fn build_waypoints(p: Vec<usize>, graph: &NavGraph, from: Vec3, to: Vec3) -> Path {
-    let nodes = p.iter().map(|nidx| Waypoint {
-        pos: graph.nodes[*nidx].pos,
-        node: Some(*nidx),
-    });
-
-    [Waypoint::for_end(from)]
-        .into_iter()
-        .chain(nodes)
-        .chain([Waypoint::for_end(to)])
+fn build_waypoints(p: Vec<NodeKey>, graph: &NavGraph, from: Vec3, to: Vec3) -> Path {
+    p.iter()
+        .map(|nidx| match nidx {
+            NodeKey::GraphNode(idx) => Waypoint {
+                pos: graph.nodes[*idx].pos,
+                node: Some(*idx),
+            },
+            NodeKey::End => Waypoint::for_end(to),
+            NodeKey::Start => Waypoint::for_end(from),
+        })
         .collect::<Vec<Waypoint>>()
         .into()
 }
 
-fn reconstruct_path(came_from: &HashMap<usize, usize>, last_node: usize) -> Vec<usize> {
+fn reconstruct_path(came_from: &HashMap<NodeKey, NodeKey>, last_node: NodeKey) -> Vec<NodeKey> {
     let mut path = Vec::new();
     let mut current = last_node;
 
@@ -493,13 +523,20 @@ fn reconstruct_path(came_from: &HashMap<usize, usize>, last_node: usize) -> Vec<
     path
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum NodeKey {
+    Start,
+    End,
+    GraphNode(NodeIndex),
+}
+
 #[derive(Debug, Copy, Clone)]
 struct AStarNode {
     // curremtly known cheapest cost from start to here
     g: f32,
     // estimates the cheapest complete path start to end
     f: f32,
-    node_index: NodeIndex,
+    node: NodeKey,
 }
 
 impl PartialEq for AStarNode {
