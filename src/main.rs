@@ -1,10 +1,14 @@
 use bevy::{
     color::palettes::css::WHITE,
+    input::common_conditions::*,
+    math::sampling::UniformMeshSampler,
     pbr::wireframe::{WireframeConfig, WireframePlugin},
     prelude::*,
-    render::mesh::VertexAttributeValues,
+    state::commands,
 };
 use bevy_obj::ObjPlugin;
+use rand::distributions::Distribution;
+use rand::rngs::ThreadRng;
 use std::{collections::HashMap, f32::consts::PI, time::Instant};
 
 fn main() {
@@ -16,11 +20,16 @@ fn main() {
         })
         .add_systems(Startup, setup)
         .add_systems(Update, generate_new_nav_graph)
+        .add_systems(
+            Update,
+            regenerate_test_route_parameters.run_if(input_just_pressed(KeyCode::KeyR)),
+        )
         .run();
 }
 
 fn setup(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     ass: Res<AssetServer>,
 ) {
@@ -35,7 +44,18 @@ fn setup(
         Mesh3d(navmesh),
         NavRoot,
         MeshMaterial3d(navmesh_material_handle.clone()),
-        Transform::IDENTITY.with_scale(Vec3::new(4.0, 4.0, 4.0)),
+    ));
+
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(0.025))),
+        MeshMaterial3d(navmesh_material_handle.clone()),
+        Start,
+    ));
+
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(0.0125))),
+        MeshMaterial3d(navmesh_material_handle.clone()),
+        End,
     ));
 
     // light
@@ -54,7 +74,7 @@ fn setup(
 
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(2.0, 10.0, 2.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 3.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
@@ -151,4 +171,31 @@ fn register_node(
             nodes.push(NavNode::new());
             len
         })
+}
+
+#[derive(Component)]
+struct Start;
+#[derive(Component)]
+struct End;
+
+fn regenerate_test_route_parameters(
+    nav_mesh: Query<&Mesh3d, (With<NavRoot>, With<NavGraph>)>,
+    mut route_start: Query<&mut Transform, (With<Start>, Without<End>)>,
+    mut route_end: Query<&mut Transform, (With<End>, Without<Start>)>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    let mut start = route_start.single_mut().unwrap();
+    let mut end = route_end.single_mut().unwrap();
+
+    let mesh = nav_mesh.single().unwrap();
+    let cmesh: &Mesh = meshes.get(mesh.id()).unwrap();
+    let sampler = UniformMeshSampler::try_new(cmesh.triangles().unwrap()).unwrap();
+
+    let mut rng = ThreadRng::default();
+
+    let a = sampler.sample(&mut rng);
+    let b = sampler.sample(&mut rng);
+
+    start.translation = a;
+    end.translation = b;
 }

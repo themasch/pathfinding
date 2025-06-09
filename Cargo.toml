@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 bevy = "0.16.1"
 bevy_obj = { version = "0.16.1", features = ["log"] }
+rand = { version = "0.8" }
